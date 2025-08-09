@@ -1,0 +1,18 @@
+# NFS Exports Configuration Template
+# This file is generated from template - do not edit directly
+
+# Export the NFS root directory for PXE clients
+${NFS_ROOT} ${DHCP_SUBNET}/${DHCP_NETMASK}(ro,sync,no_root_squash,no_subtree_check)
+
+# Export additional directories if needed
+${NFS_ROOT}/images ${DHCP_SUBNET}/${DHCP_NETMASK}(ro,sync,no_root_squash,no_subtree_check)
+${NFS_ROOT}/boot ${DHCP_SUBNET}/${DHCP_NETMASK}(ro,sync,no_root_squash,no_subtree_check)
+
+# Security options based on NFS_SECURITY setting
+# sys: Standard Unix security
+# krb5: Kerberos authentication
+# krb5i: Kerberos with integrity checking  
+# krb5p: Kerberos with privacy (encryption)
+
+# Example for enhanced security (uncomment if NFS_SECURITY != 'sys'):
+# ${NFS_ROOT} ${DHCP_SUBNET}/${DHCP_NETMASK}(ro,sync,no_root_squash,no_subtree_check,sec=${NFS_SECURITY})

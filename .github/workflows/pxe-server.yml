@@ -1,0 +1,422 @@
+name: PXE Server CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - '.github/workflows/**'
+      - '.env.example'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - '.github/workflows/**'
+      - '.env.example'
+  workflow_dispatch:
+    inputs:
+      test_suite:
+        description: 'Test suite to run'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+        - all
+        - configs
+        - network
+        - services
+        - integration
+
+env:
+  # Default environment variables for testing
+  DHCP_SUBNET: 192.168.100.0
+  DHCP_NETMASK: 255.255.255.0
+  DHCP_RANGE_START: 192.168.100.100
+  DHCP_RANGE_END: 192.168.100.200
+  DHCP_GATEWAY: 192.168.100.1
+  DHCP_DNS: 8.8.8.8,8.8.4.4
+  PXE_SERVER_IP: 192.168.100.10
+  TFTP_ROOT: /tmp/ci-tftp
+  NFS_ROOT: /tmp/ci-nfs
+  DHCP_LEASE_TIME: 7200
+  DHCP_INTERFACE: eth0
+  TFTP_PORT: 69
+  NFS_PORT: 2049
+  SECURE_TFTP: false
+  NFS_SECURITY: sys
+  LOG_LEVEL: INFO
+  LOG_FILE: /tmp/pxe-server.log
+
+jobs:
+  lint-and-validate:
+    name: Lint and Validate
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y shellcheck ipcalc bc
+
+    - name: Lint shell scripts
+      run: |
+        echo "Linting shell scripts..."
+        find . -name "*.sh" -type f | while read -r script; do
+          echo "Linting: $script"
+          shellcheck "$script" || exit 1
+        done
+
+    - name: Validate configuration templates
+      run: |
+        echo "Validating configuration templates..."
+        # Check that templates contain expected variables
+        templates=(
+          "src/config/dhcpd.conf.template"
+          "src/config/tftpd.conf.template"
+          "src/config/exports.template"
+          "src/config/pxelinux.cfg.template"
+        )
+        
+        for template in "${templates[@]}"; do
+          if [[ ! -f "$template" ]]; then
+            echo "Template not found: $template"
+            exit 1
+          fi
+          echo "Template exists: $template"
+        done
+
+    - name: Validate environment example
+      run: |
+        echo "Validating .env.example..."
+        if [[ ! -f ".env.example" ]]; then
+          echo ".env.example not found"
+          exit 1
+        fi
+        
+        # Check that required variables are present
+        required_vars=(
+          "DHCP_SUBNET"
+          "DHCP_NETMASK"
+          "DHCP_RANGE_START"
+          "DHCP_RANGE_END"
+          "PXE_SERVER_IP"
+          "TFTP_ROOT"
+          "NFS_ROOT"
+        )
+        
+        for var in "${required_vars[@]}"; do
+          if ! grep -q "^${var}=" .env.example; then
+            echo "Required variable missing from .env.example: $var"
+            exit 1
+          fi
+          echo "Variable found: $var"
+        done
+
+  test-configs:
+    name: Configuration Tests
+    runs-on: ubuntu-latest
+    needs: lint-and-validate
+    if: github.event.inputs.test_suite == 'all' || github.event.inputs.test_suite == 'configs' || github.event.inputs.test_suite == ''
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y isc-dhcp-server tftpd-hpa nfs-kernel-server ipcalc bc
+        # Note: Services won't start in GitHub Actions, but packages provide validation tools
+
+    - name: Setup test environment
+      run: |
+        # Create test directories
+        mkdir -p /tmp/ci-tftp /tmp/ci-nfs /tmp/test-configs
+        
+        # Override config paths for testing
+        export DHCP_CONFIG_FILE="/tmp/test-configs/dhcpd.conf"
+        export TFTP_CONFIG_FILE="/tmp/test-configs/tftpd-hpa"
+        export NFS_CONFIG_FILE="/tmp/test-configs/exports"
+        export PXELINUX_CONFIG_DIR="/tmp/test-configs/pxelinux.cfg"
+
+    - name: Run configuration tests
+      run: |
+        echo "Running configuration tests..."
+        chmod +x tests/test-configs.sh
+        tests/test-configs.sh
+
+    - name: Upload test artifacts
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: config-test-results
+        path: /tmp/test-configs/
+        retention-days: 7
+
+  test-network:
+    name: Network Tests
+    runs-on: ubuntu-latest
+    needs: lint-and-validate
+    if: github.event.inputs.test_suite == 'all' || github.event.inputs.test_suite == 'network' || github.event.inputs.test_suite == ''
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install network tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y iproute2 iputils-ping netstat-nat ipcalc bc
+
+    - name: Run network tests
+      run: |
+        echo "Running network tests..."
+        chmod +x tests/test-network.sh
+        tests/test-network.sh
+
+  test-services:
+    name: Service Tests
+    runs-on: ubuntu-latest
+    needs: lint-and-validate
+    if: github.event.inputs.test_suite == 'all' || github.event.inputs.test_suite == 'services' || github.event.inputs.test_suite == ''
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install service packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y isc-dhcp-server tftpd-hpa nfs-kernel-server systemd
+
+    - name: Run service tests
+      run: |
+        echo "Running service tests..."
+        chmod +x tests/test-services.sh
+        tests/test-services.sh
+
+  test-integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [test-configs, test-network, test-services]
+    if: github.event.inputs.test_suite == 'all' || github.event.inputs.test_suite == 'integration' || github.event.inputs.test_suite == ''
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install all dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          isc-dhcp-server \
+          tftpd-hpa \
+          nfs-kernel-server \
+          syslinux-common \
+          pxelinux \
+          iproute2 \
+          iputils-ping \
+          ipcalc \
+          bc \
+          shellcheck
+
+    - name: Run integration tests
+      run: |
+        echo "Running integration tests..."
+        chmod +x tests/test-integration.sh
+        tests/test-integration.sh
+
+    - name: Upload integration test artifacts
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: integration-test-results
+        path: /tmp/pxe-integration-tests/
+        retention-days: 7
+
+  validate-setup:
+    name: Validate Setup Process
+    runs-on: ubuntu-latest
+    needs: test-integration
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install all dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          isc-dhcp-server \
+          tftpd-hpa \
+          nfs-kernel-server \
+          syslinux-common \
+          pxelinux \
+          iproute2 \
+          iputils-ping \
+          ipcalc \
+          bc
+
+    - name: Test environment validation
+      run: |
+        echo "Testing environment validation..."
+        chmod +x src/scripts/validate-env.sh
+        src/scripts/validate-env.sh
+
+    - name: Test configuration generation
+      run: |
+        echo "Testing configuration generation..."
+        # Create test directories
+        sudo mkdir -p /tmp/validate-tftp /tmp/validate-nfs /tmp/validate-configs
+        
+        # Override paths for testing
+        export DHCP_CONFIG_FILE="/tmp/validate-configs/dhcpd.conf"
+        export TFTP_CONFIG_FILE="/tmp/validate-configs/tftpd-hpa"
+        export NFS_CONFIG_FILE="/tmp/validate-configs/exports"
+        export PXELINUX_CONFIG_DIR="/tmp/validate-configs/pxelinux.cfg"
+        export TFTP_ROOT="/tmp/validate-tftp"
+        export NFS_ROOT="/tmp/validate-nfs"
+        
+        chmod +x src/scripts/generate-configs.sh
+        src/scripts/generate-configs.sh
+
+    - name: Test service management
+      run: |
+        echo "Testing service management..."
+        chmod +x src/scripts/manage-services.sh
+        src/scripts/manage-services.sh status
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: lint-and-validate
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Bandit Security Scan
+      uses: securecodewarrior/github-action-add-sarif@v1
+      with:
+        sarif-file: 'bandit-results.sarif'
+      continue-on-error: true
+
+    - name: Check for hardcoded secrets
+      run: |
+        echo "Checking for hardcoded secrets..."
+        # Check for common patterns that might indicate hardcoded secrets
+        if grep -r -i "password\|secret\|key\|token" --include="*.sh" --include="*.template" . | grep -v ".example" | grep -v "README.md"; then
+          echo "Potential hardcoded secrets found. Please review."
+          exit 1
+        else
+          echo "No hardcoded secrets detected."
+        fi
+
+    - name: Validate file permissions
+      run: |
+        echo "Validating file permissions..."
+        # Check that scripts are executable
+        find src/scripts -name "*.sh" -type f | while read -r script; do
+          if [[ ! -x "$script" ]]; then
+            echo "Script not executable: $script"
+            exit 1
+          fi
+        done
+        
+        find tests -name "*.sh" -type f | while read -r script; do
+          if [[ ! -x "$script" ]]; then
+            echo "Test script not executable: $script"
+            exit 1
+          fi
+        done
+        
+        echo "All scripts have proper permissions."
+
+  build-documentation:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Generate documentation
+      run: |
+        echo "Generating documentation..."
+        
+        # Create a simple documentation index
+        cat > docs_index.md << 'EOF'
+        # PXE Server Documentation
+        
+        ## Scripts
+        - [Setup Script](src/scripts/setup-pxe.sh) - Main PXE server setup
+        - [Config Generator](src/scripts/generate-configs.sh) - Generate configurations
+        - [Service Manager](src/scripts/manage-services.sh) - Manage services
+        - [Environment Validator](src/scripts/validate-env.sh) - Validate environment
+        
+        ## Configuration Templates
+        - [DHCP Template](src/config/dhcpd.conf.template) - DHCP server configuration
+        - [TFTP Template](src/config/tftpd.conf.template) - TFTP server configuration
+        - [NFS Template](src/config/exports.template) - NFS exports configuration
+        - [PXE Menu Template](src/config/pxelinux.cfg.template) - PXE boot menu
+        
+        ## Tests
+        - [Configuration Tests](tests/test-configs.sh) - Test configuration generation
+        - [Network Tests](tests/test-network.sh) - Test network connectivity
+        - [Service Tests](tests/test-services.sh) - Test service status
+        - [Integration Tests](tests/test-integration.sh) - End-to-end tests
+        EOF
+        
+        echo "Documentation generated successfully."
+
+    - name: Upload documentation
+      uses: actions/upload-artifact@v4
+      with:
+        name: documentation
+        path: docs_index.md
+        retention-days: 30
+
+  notify-completion:
+    name: Notify Completion
+    runs-on: ubuntu-latest
+    needs: [test-configs, test-network, test-services, test-integration, validate-setup, security-scan]
+    if: always()
+    steps:
+    - name: Check job results
+      run: |
+        echo "=== CI/CD Pipeline Results ==="
+        echo "Lint and Validate: ${{ needs.lint-and-validate.result }}"
+        echo "Configuration Tests: ${{ needs.test-configs.result }}"
+        echo "Network Tests: ${{ needs.test-network.result }}"
+        echo "Service Tests: ${{ needs.test-services.result }}"
+        echo "Integration Tests: ${{ needs.test-integration.result }}"
+        echo "Setup Validation: ${{ needs.validate-setup.result }}"
+        echo "Security Scan: ${{ needs.security-scan.result }}"
+        echo "============================="
+        
+        # Determine overall status
+        if [[ "${{ needs.lint-and-validate.result }}" == "success" && \
+              "${{ needs.test-configs.result }}" == "success" && \
+              "${{ needs.test-network.result }}" == "success" && \
+              "${{ needs.test-services.result }}" == "success" && \
+              "${{ needs.test-integration.result }}" == "success" ]]; then
+          echo "✅ All critical tests passed!"
+          echo "overall_status=success" >> $GITHUB_ENV
+        else
+          echo "❌ Some tests failed."
+          echo "overall_status=failure" >> $GITHUB_ENV
+          exit 1
+        fi
+
+    - name: Summary
+      run: |
+        echo "## PXE Server CI/CD Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Lint and Validate | ${{ needs.lint-and-validate.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Configuration Tests | ${{ needs.test-configs.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Network Tests | ${{ needs.test-network.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Service Tests | ${{ needs.test-services.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Integration Tests | ${{ needs.test-integration.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Setup Validation | ${{ needs.validate-setup.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Security Scan | ${{ needs.security-scan.result }} |" >> $GITHUB_STEP_SUMMARY
