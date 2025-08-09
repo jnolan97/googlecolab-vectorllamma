@@ -1,0 +1,19 @@
+# TFTP Server Configuration Template
+# This file is generated from template - do not edit directly
+
+# TFTP Server Options
+TFTP_USERNAME="tftp"
+TFTP_DIRECTORY="${TFTP_ROOT}"
+TFTP_ADDRESS="0.0.0.0:${TFTP_PORT}"
+TFTP_OPTIONS="--secure"
+
+# Security settings
+RUN_DAEMON="yes"
+OPTIONS="-l -s ${TFTP_ROOT}"
+
+# Additional options based on security settings
+if [ "${SECURE_TFTP}" = "true" ]; then
+    OPTIONS="${OPTIONS} --secure --create"
+else
+    OPTIONS="${OPTIONS}"
+fi

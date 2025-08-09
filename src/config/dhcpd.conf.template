@@ -1,0 +1,57 @@
+# DHCP Configuration Template for PXE Server
+# This file is generated from template - do not edit directly
+
+# Global DHCP settings
+authoritative;
+ddns-update-style none;
+default-lease-time ${DHCP_LEASE_TIME};
+max-lease-time $((${DHCP_LEASE_TIME} * 2));
+
+# PXE Boot options
+allow booting;
+allow bootp;
+option space PXE;
+option PXE.mtftp-ip code 1 = ip-address;
+option PXE.mtftp-cport code 2 = unsigned integer 16;
+option PXE.mtftp-sport code 3 = unsigned integer 16;
+option PXE.mtftp-tmout code 4 = unsigned integer 8;
+option PXE.mtftp-delay code 5 = unsigned integer 8;
+option arch code 93 = unsigned integer 16;
+
+# Subnet configuration
+subnet ${DHCP_SUBNET} netmask ${DHCP_NETMASK} {
+    range ${DHCP_RANGE_START} ${DHCP_RANGE_END};
+    option routers ${DHCP_GATEWAY};
+    option domain-name-servers ${DHCP_DNS};
+    option broadcast-address $(ipcalc -b ${DHCP_SUBNET}/${DHCP_NETMASK} | cut -d= -f2);
+    
+    # PXE Boot settings
+    next-server ${PXE_SERVER_IP};
+    
+    # Architecture-specific boot files
+    if option arch = 00:07 {
+        filename "bootx64.efi";
+    } else if option arch = 00:09 {
+        filename "bootx64.efi";
+    } else if option arch = 00:0b {
+        filename "bootaa64.efi";
+    } else {
+        filename "pxelinux.0";
+    }
+    
+    # Vendor class identifier for PXE clients
+    class "pxeclients" {
+        match if substring (option vendor-class-identifier, 0, 9) = "PXEClient";
+        next-server ${PXE_SERVER_IP};
+        
+        if option arch = 00:07 {
+            filename "bootx64.efi";
+        } else if option arch = 00:09 {
+            filename "bootx64.efi";
+        } else if option arch = 00:0b {
+            filename "bootaa64.efi";
+        } else {
+            filename "pxelinux.0";
+        }
+    }
+}
